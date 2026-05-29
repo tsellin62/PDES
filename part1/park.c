@@ -1,7 +1,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "queues.h"
+
+//enums for car and passengers
+typedef enum {
+	LOADING,
+	RUNNING,
+	UNLOADING
+} car_state;
+
+typedef struct {
+	int passenger_count;
+	car_state state;
+	int boarded;
+	int unboarded;
+	pthread_mutex_t lock;
+	pthread_cond_t board_done;
+	pthread_cond_t unboard_done;
+} car;
+
+typedef struct {
+	int id;
+	int board_signal;
+	int unboard_signal;
+	unsigned int seed;
+	pthread_mutex_t lock;
+	pthread_cond_t can_board;
+	pthread_cond_t can_unboard;
+} passenger;
 
 //default options
 int n = 30;  //number of passenger threads
@@ -57,6 +83,84 @@ void destroy_globals() {
     pthread_cond_destroy(&my_turn_to_unload);
 }
 
+//initialize and clean up passengers and cars
+void init_car(car *c, int id) {
+    c->id = id;
+    c->sequence = 0;
+    c->passenger_count = 0;
+    c->state = LOADING;
+    c->boarded = 0;
+    c->unboarded = 0;
+    pthread_mutex_init(&c->lock, NULL);
+    pthread_cond_init(&c->board_done, NULL);
+    pthread_cond_init(&c->unboard_done, NULL);
+}
+
+void init_passenger(passenger *p, int id) {
+	p->id = id;
+    p->board_signal = 0;
+    p->unboard_signal = 0;
+	p->seed = id * 12345;
+    pthread_mutex_init(&p->lock, NULL);
+    pthread_cond_init(&p->can_board, NULL);
+    pthread_cond_init(&p->can_unboard, NULL);
+}
+
+void clean_car(car *c) {
+    pthread_mutex_destroy(&c->lock);
+    pthread_cond_destroy(&c->board_done);
+    pthread_cond_destroy(&c->unboard_done);
+}
+
+void clean_passenger(passenger *p) {
+    pthread_mutex_destroy(&p->lock);
+    pthread_cond_destroy(&p->can_board);
+    pthread_cond_destroy(&p->can_unboard);
+}
+
+//passenger functions
+void explore_park(passenger* p) {
+	printf("[Time: ] Passenger %d is exploring the park\n", p->id);
+	int explore_time = (rand_r(&p->seed) % 10) + 1;
+	sleep(explore_time);
+	printf("[Time: ] Passenger %d explored for %d seconds\n", p->id, explore_time);
+}
+
+void get_ride_ticket(passenger* p) {}
+
+void enter_ride_queue(passenger* p) {}
+
+void board_car(passenger* p) {}
+
+void unboard_car(passenger* p) {}
+
+//car functions
+//...
+
+//thread functions
+void passenger_thread(void* arg) {
+	passenger* p = (passenger*)arg;
+
+	while (is_park_open()) {
+		explore_park(p);
+		get_ride_ticket(p);
+		enter_ride_queue(p);
+		board_car(p);
+		unboard_car(p);
+	}	
+	return;
+}
+
+//other functions
+int is_park_open() {
+	pthread_mutex_lock(&park_mutex);
+	int open = park_open;
+	pthread_mutex_unlock(&park_mutex);
+	return open;
+}
+
+
+//main
 int main(int argc, char* argv[]) {	
 	//parse flags
 	for (int i = 1; i < argc;) {
@@ -158,25 +262,4 @@ int main(int argc, char* argv[]) {
 	free(passenger_threads);
 	
 	return 0;
-}
-
-int is_park_open() {
-	pthread_mutex_lock(&park_mutex);
-	int open = park_open;
-	pthread_mutex_unlock(&park_mutex);
-	return open;
-}
-
-void passenger_thread(void* arg) {
-	passenger* p = (passenger*)arg;
-
-	while (is_park_open()) {
-		explore_park(p);
-		get_ride_ticket(p);
-		enter_ride_queue(p);
-		board_car(p);
-		unboard_car(p);
-	}
-	
-	return;
 }
