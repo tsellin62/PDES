@@ -3,6 +3,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <errno.h>
 
 //enums for car and passengers
 typedef enum {
@@ -17,6 +18,7 @@ typedef struct {
 	car_state state;
 	int boarded;
 	int unboarded;
+	int* aboard;
 	pthread_mutex_t lock;
 	pthread_cond_t board_done;
 	pthread_cond_t unboard_done;
@@ -34,13 +36,17 @@ typedef struct {
 } passenger;
 
 //default options
-int n = 30;  //number of passenger threads
-int c = 4;   //number of car threads
-int p = 2;   //capacity per car
-int w = 3;   //car waiting period
-int r = 2;   //car ride duration
-int t = 60;  //park open duration
-int j = 10;  //ride queue max size
+int n = 1;   //number of passenger threads
+int c = 1;   //number of car threads
+int p = 1;   //capacity per car
+int w = 1;   //car waiting period
+int r = 1;   //car ride duration
+int t = 25;  //park open duration
+int j = 1;   //ride queue max size
+
+//passenger/car arrays
+car* cars;
+passenger* passengers;
 
 //park state
 int park_open = 1;
@@ -51,8 +57,12 @@ pthread_mutex_t ticket_booth_mutex;
 
 //ride queue
 int ride_queue_size = 0;
+int* ride_queue;
+int ride_queue_head = 0;
+int ride_queue_tail = 0;
 pthread_mutex_t ride_queue_mutex;
 pthread_cond_t ride_queue_not_full;
+pthread_cond_t passenger_ready;
 
 //loading zone (one car loads at a time)
 pthread_mutex_t loading_zone_mutex;
@@ -70,10 +80,12 @@ void init_globals() {
     pthread_mutex_init(&ticket_booth_mutex, NULL);
     pthread_mutex_init(&ride_queue_mutex, NULL);
     pthread_cond_init(&ride_queue_not_full, NULL);
+	pthread_cond_init(&passenger_ready, NULL);
     pthread_mutex_init(&loading_zone_mutex, NULL);
     pthread_cond_init(&loading_zone_free, NULL);
     pthread_mutex_init(&unload_order_mutex, NULL);
     pthread_cond_init(&my_turn_to_unload, NULL);
+	ride_queue = (int*)malloc(j * sizeof(int));
 }
 
 void destroy_globals() {
@@ -94,6 +106,7 @@ void init_car(car *c, int id) {
     c->state = LOADING;
     c->boarded = 0;
     c->unboarded = 0;
+	c->aboard = (int*)malloc(p * sizeof(int));
     pthread_mutex_init(&c->lock, NULL);
     pthread_cond_init(&c->board_done, NULL);
     pthread_cond_init(&c->unboard_done, NULL);
@@ -111,6 +124,7 @@ void init_passenger(passenger *p, int id) {
 }
 
 void clean_car(car *c) {
+	free(c->aboard);
     pthread_mutex_destroy(&c->lock);
     pthread_cond_destroy(&c->board_done);
     pthread_cond_destroy(&c->unboard_done);
@@ -122,12 +136,41 @@ void clean_passenger(passenger *p) {
     pthread_cond_destroy(&p->can_unboard);
 }
 
+//other functions
+int get_time() {
+	static time_t start = 0;
+	if (start == 0) {
+		start = time(NULL);
+	}
+	return (int)(time(NULL) - start);
+}
+
+int is_park_open() {
+	pthread_mutex_lock(&park_mutex);
+	int open = park_open;
+	pthread_mutex_unlock(&park_mutex);
+	return open;
+}
+
+void enqueue(int passenger_id) {
+	ride_queue[ride_queue_tail] = passenger_id;
+	ride_queue_tail = (ride_queue_tail + 1) % j;
+	ride_queue_size++;
+}
+
+int dequeue() {
+	int id = ride_queue[ride_queue_head];
+	ride_queue_head = (ride_queue_head - 1) % j;
+	ride_queue_size--;
+	return id;
+}
+
 //passenger functions
 void explore_park(passenger* p) {
-	printf("[Time: ] Passenger %d is exploring the park\n", p->id);
+	printf("[Time: %d] Passenger %d is exploring the park\n", get_time(), p->id);
 	int explore_time = (rand_r(&p->seed) % 10) + 1;
 	sleep(explore_time);
-	printf("[Time: ] Passenger %d explored for %d seconds\n", p->id, explore_time);
+	printf("[Time: %d] Passenger %d explored for %d seconds\n", get_time(), p->id, explore_time);
 }
 
 int get_ride_ticket(passenger* p) {
@@ -139,28 +182,32 @@ int get_ride_ticket(passenger* p) {
 	}
 
 	//if park closes while waiting, exit
-	if (!park_is_open()) {
+	if (!is_park_open()) {
 		pthread_mutex_unlock(&ticket_booth_mutex);
 		return 0;
 	}
 	
 	ride_queue_size++;
-	printf("[Time: ] Passenger %d acquired a ticket\n", p->id);
+	printf("[Time: %d] Passenger %d acquired a ticket\n", get_time(), p->id);
 	pthread_mutex_unlock(&ticket_booth_mutex);
 	return 1;
 }
 
 void enter_ride_queue(passenger* p) {
-	printf("[Time: ] Passenger %d has entered the ride queue\n", p->id);
-	pthread_mutex_lock(&p->lock);
+	printf("[Time: %d] Passenger %d has entered the ride queue\n", get_time(), p->id);
+	pthread_mutex_lock(&ride_queue_mutex);
+	enqueue(p->id);
+	pthread_cond_signal(&passenger_ready);
+	pthread_mutex_unlock(&ride_queue_mutex);
 
-	while (p->board_signal) {
+	pthread_mutex_lock(&p->lock);
+	while (!p->board_signal) {
 		pthread_cond_wait(&p->can_board, &p->lock);
 	}
 
 	p->board_signal = 0;
 	pthread_mutex_unlock(&p->lock);
-	printf("[Time: ] Passenger %d is boarding\n", p->id);
+	printf("[Time: %d] Passenger %d is boarding\n", get_time(), p->id);
 }
 
 void board_car(passenger *p) {
@@ -183,27 +230,135 @@ void unboard_car(passenger *p) {
     p->unboard_signal = 0;
     pthread_mutex_unlock(&p->lock);
 
-    // tell the car this passenger has unboarded
+    //tell the car this passenger has unboarded
     pthread_mutex_lock(&p->my_car->lock);
     p->my_car->unboarded++;
-    printf("[Time: ] Passenger %d unboarded\n", p->id);
+    printf("[Time: %d] Passenger %d unboarded\n", get_time(), p->id);
     pthread_cond_signal(&p->my_car->unboard_done);
     pthread_mutex_unlock(&p->my_car->lock);
 
-    // decrement ride queue and signal ticket booth
+    //decrement ride queue and signal ticket booth
     pthread_mutex_lock(&ride_queue_mutex);
     ride_queue_size--;
     pthread_cond_signal(&ride_queue_not_full);
     pthread_mutex_unlock(&ride_queue_mutex);
 
-    p->my_car = NULL;  // detach from car
+	//detach from car
+    p->my_car = NULL;
 }
 
 //car functions
-//...
+void load(car *c) {
+    //get loading zone
+    pthread_mutex_lock(&loading_zone_mutex);
+    while (loading_zone_occupied) {
+        pthread_cond_wait(&loading_zone_free, &loading_zone_mutex);
+    }
+    loading_zone_occupied = 1;
+    pthread_mutex_unlock(&loading_zone_mutex);
+
+    pthread_mutex_lock(&c->lock);
+    c->state = LOADING;
+    c->boarded = 0;
+    c->passenger_count = 0;
+    pthread_mutex_unlock(&c->lock);
+
+    //wait until at least one passenger is in the queue
+    pthread_mutex_lock(&ride_queue_mutex);
+    while (ride_queue_size == 0) {
+        pthread_cond_wait(&passenger_ready, &ride_queue_mutex);
+    }
+
+    //signal first passenger to board
+    int pid = dequeue();
+    pthread_mutex_unlock(&ride_queue_mutex);
+
+    passenger *first = &passengers[pid];
+    first->my_car = c;
+	c->aboard[c->boarded] = first->id;
+    pthread_mutex_lock(&first->lock);
+    first->board_signal = 1;
+    pthread_cond_signal(&first->can_board);
+    pthread_mutex_unlock(&first->lock);
+
+    //wait for boarding, keep loading until full or timeout
+    pthread_mutex_lock(&c->lock);
+    while (c->boarded < p) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += w;
+
+        int result = pthread_cond_timedwait(&c->board_done, &c->lock, &ts);
+
+        if (result == ETIMEDOUT) {
+            if (c->boarded > 0) {
+                break;
+            }
+        } else {
+            //a passenger boarded, signal next if queue has more
+            pthread_mutex_lock(&ride_queue_mutex);
+            if (ride_queue_size > 0 && c->boarded < p) {
+                int next_pid = dequeue();
+                pthread_mutex_unlock(&ride_queue_mutex);
+
+                passenger *next = &passengers[next_pid];
+                next->my_car = c;
+				c->aboard[c->boarded] = next->id;
+                pthread_mutex_lock(&next->lock);
+                next->board_signal = 1;
+                pthread_cond_signal(&next->can_board);
+                pthread_mutex_unlock(&next->lock);
+            } else {
+                pthread_mutex_unlock(&ride_queue_mutex);
+            }
+        }
+    }
+
+    c->passenger_count = c->boarded;
+	if (c->passenger_count == p) {
+		printf("[Time: %d] Car %d is full with %d passengers\n", get_time(), c->id, c->passenger_count);
+	}
+    printf("[Time: %d] Car %d has departed to ride\n", get_time(), c->id);
+    pthread_mutex_unlock(&c->lock);
+}
+
+void run(car* c) {
+	pthread_mutex_lock(&c->lock);
+	c->state = RUNNING;
+	pthread_mutex_unlock(&c->lock);
+	sleep(r);
+	printf("[Time: %d] Car %d has returned from the ride\n", get_time(), c->id);
+}
+
+void unload(car* c) {
+	pthread_mutex_lock(&c->lock);
+	c->state = UNLOADING;
+	c->unboarded = 0;
+	printf("[Time: %d] Car %d has invoked unload()\n", get_time(), c->id);
+
+	//signal each passenger to unboard
+	for (int i = 0; i < c->passenger_count; i++) {
+		passenger* p = &passengers[c->aboard[i]];
+		pthread_mutex_lock(&p->lock);
+		p->unboard_signal = 1;
+		pthread_cond_signal(&p->can_unboard);
+		pthread_mutex_unlock(&p->lock);
+	}
+
+	//wait until unboarding complete
+	while (c->unboarded < c->passenger_count) {
+		pthread_cond_wait(&c->unboard_done, &c->lock);
+	}
+
+	//release loading zone
+	pthread_mutex_lock(&loading_zone_mutex);
+	loading_zone_occupied = 0;
+	pthread_cond_signal(&loading_zone_free);
+	pthread_mutex_unlock(&loading_zone_mutex);
+}
 
 //thread functions
-void passenger_thread(void* arg) {
+void* passenger_thread(void* arg) {
 	passenger* p = (passenger*)arg;
 
 	while (is_park_open()) {
@@ -215,22 +370,20 @@ void passenger_thread(void* arg) {
 		board_car(p);
 		unboard_car(p);
 	}	
-	return;
+	return NULL;
 }
 
-void car_thread(void* arg) {
+void* car_thread(void* arg) {
 	car* c = (car*)arg;
-	return;
-}
 
-//other functions
-int is_park_open() {
-	pthread_mutex_lock(&park_mutex);
-	int open = park_open;
-	pthread_mutex_unlock(&park_mutex);
-	return open;
-}
+	while(is_park_open()) {
+		load(c);
+		run(c);
+		unload(c);
+	}
 
+	return NULL;
+}
 
 //main
 int main(int argc, char* argv[]) {	
@@ -286,8 +439,8 @@ int main(int argc, char* argv[]) {
 
 	init_globals();
 
-	car* cars = (car*)malloc(c * sizeof(car));
-	passenger* passengers = (passenger*)malloc(n * sizeof(passenger));
+	cars = (car*)malloc(c * sizeof(car));
+	passengers = (passenger*)malloc(n * sizeof(passenger));
 	pthread_t* car_threads = (pthread_t*)malloc(c * sizeof(pthread_t));
 	pthread_t* passenger_threads = (pthread_t*)malloc(n * sizeof(pthread_t));
 
