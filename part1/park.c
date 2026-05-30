@@ -51,6 +51,7 @@ passenger* passengers;
 //park state
 int park_open = 1;
 pthread_mutex_t park_mutex;
+pthread_cond_t park_closed;
 
 //ticket booth
 pthread_mutex_t ticket_booth_mutex;
@@ -77,6 +78,7 @@ pthread_cond_t my_turn_to_unload;
 
 void init_globals() {
     pthread_mutex_init(&park_mutex, NULL);
+	pthread_cond_init(&park_closed, NULL);
     pthread_mutex_init(&ticket_booth_mutex, NULL);
     pthread_mutex_init(&ride_queue_mutex, NULL);
     pthread_cond_init(&ride_queue_not_full, NULL);
@@ -90,6 +92,7 @@ void init_globals() {
 
 void destroy_globals() {
     pthread_mutex_destroy(&park_mutex);
+	pthread_cond_destroy(&park_closed);
     pthread_mutex_destroy(&ticket_booth_mutex);
     pthread_mutex_destroy(&ride_queue_mutex);
     pthread_cond_destroy(&ride_queue_not_full);
@@ -136,6 +139,36 @@ void clean_passenger(passenger *p) {
     pthread_cond_destroy(&p->can_unboard);
 }
 
+//close park
+void close_park() {
+	//set park closed
+	pthread_mutex_lock(&park_mutex);
+	park_open = 0;
+	pthread_cond_broadcast(&park_closed);
+	pthread_mutex_unlock(&park_mutex);
+
+	//wake all threads blocked on any condition variable
+	pthread_mutex_lock(&ride_queue_mutex);
+	pthread_cond_broadcast(&passenger_ready);
+	pthread_cond_broadcast(&ride_queue_not_full);
+	pthread_mutex_unlock(&ride_queue_mutex);
+
+	pthread_mutex_lock(&ticket_booth_mutex);
+	pthread_cond_broadcast(&ride_queue_not_full);
+	pthread_mutex_unlock(&ticket_booth_mutex);
+
+	pthread_mutex_lock(&loading_zone_mutex);
+	pthread_cond_broadcast(&loading_zone_free);
+	pthread_mutex_unlock(&loading_zone_mutex);
+
+	for (int i = 0; i < n; i++) {
+		pthread_mutex_lock(&passengers[i].lock);
+		pthread_cond_broadcast(&passengers[i].can_board);
+		pthread_cond_broadcast(&passengers[i].can_unboard);
+		pthread_mutex_unlock(&passengers[i].lock);
+	}
+}
+
 //other functions
 int get_time() {
 	static time_t start = 0;
@@ -169,7 +202,19 @@ int dequeue() {
 void explore_park(passenger* p) {
 	printf("[Time: %d] Passenger %d is exploring the park\n", get_time(), p->id);
 	int explore_time = (rand_r(&p->seed) % 10) + 1;
-	sleep(explore_time);
+
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	ts.tv_sec += explore_time;
+
+	pthread_mutex_lock(&park_mutex);
+	while (park_open) {
+		int result = pthread_cond_timedwait(&park_closed, &park_mutex, &ts);
+		if (result == ETIMEDOUT) {
+			break;
+		}
+	}
+	pthread_mutex_unlock(&park_mutex);
 	printf("[Time: %d] Passenger %d explored for %d seconds\n", get_time(), p->id, explore_time);
 }
 
@@ -203,6 +248,10 @@ void enter_ride_queue(passenger* p) {
 	pthread_mutex_lock(&p->lock);
 	while (!p->board_signal) {
 		pthread_cond_wait(&p->can_board, &p->lock);
+	}
+	if (!is_park_open()) {
+		pthread_mutex_unlock(&p->lock);
+		return;
 	}
 
 	p->board_signal = 0;
@@ -267,6 +316,10 @@ void load(car *c) {
     pthread_mutex_lock(&ride_queue_mutex);
     while (ride_queue_size == 0) {
         pthread_cond_wait(&passenger_ready, &ride_queue_mutex);
+		if (!is_park_open()) {
+			pthread_mutex_unlock(&ride_queue_mutex);
+			return;
+		}
     }
 
     //signal first passenger to board
@@ -378,7 +431,13 @@ void* car_thread(void* arg) {
 
 	while(is_park_open()) {
 		load(c);
+		if (!is_park_open()) {
+			break;
+		}
 		run(c);
+		if (!is_park_open()) {
+			break;
+		}
 		unload(c);
 	}
 
@@ -462,9 +521,7 @@ int main(int argc, char* argv[]) {
 	sleep(t);
 
 	//close park
-	pthread_mutex_lock(&park_mutex);
-	park_open = 0;
-	pthread_mutex_unlock(&park_mutex);
+	close_park();
 
 	//wait for threads to finish
 	for (int i = 0; i < c; i++) {
