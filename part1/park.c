@@ -167,6 +167,13 @@ void close_park() {
 		pthread_cond_broadcast(&passengers[i].can_unboard);
 		pthread_mutex_unlock(&passengers[i].lock);
 	}
+
+	for (int i = 0; i < c; i++) {
+		pthread_mutex_lock(&cars[i].lock);
+		pthread_cond_broadcast(&cars[i].board_done);
+		pthread_cond_broadcast(&cars[i].unboard_done);
+		pthread_mutex_lock(&cars[i].lock);
+	}
 }
 
 //other functions
@@ -193,7 +200,7 @@ void enqueue(int passenger_id) {
 
 int dequeue() {
 	int id = ride_queue[ride_queue_head];
-	ride_queue_head = (ride_queue_head - 1) % j;
+	ride_queue_head = (ride_queue_head + 1) % j;
 	ride_queue_size--;
 	return id;
 }
@@ -232,13 +239,12 @@ int get_ride_ticket(passenger* p) {
 		return 0;
 	}
 	
-	ride_queue_size++;
 	printf("[Time: %d] Passenger %d acquired a ticket\n", get_time(), p->id);
 	pthread_mutex_unlock(&ticket_booth_mutex);
 	return 1;
 }
 
-void enter_ride_queue(passenger* p) {
+int enter_ride_queue(passenger* p) {
 	printf("[Time: %d] Passenger %d has entered the ride queue\n", get_time(), p->id);
 	pthread_mutex_lock(&ride_queue_mutex);
 	enqueue(p->id);
@@ -246,17 +252,18 @@ void enter_ride_queue(passenger* p) {
 	pthread_mutex_unlock(&ride_queue_mutex);
 
 	pthread_mutex_lock(&p->lock);
-	while (!p->board_signal) {
+	while (!p->board_signal && park_open) {
 		pthread_cond_wait(&p->can_board, &p->lock);
 	}
 	if (!is_park_open()) {
 		pthread_mutex_unlock(&p->lock);
-		return;
+		return 0;
 	}
 
 	p->board_signal = 0;
 	pthread_mutex_unlock(&p->lock);
 	printf("[Time: %d] Passenger %d is boarding\n", get_time(), p->id);
+	return 1;
 }
 
 void board_car(passenger *p) {
@@ -347,7 +354,12 @@ void load(car *c) {
             if (c->boarded > 0) {
                 break;
             }
-        } else {
+			else if (!is_park_open()) {
+				pthread_mutex_unlock(&c->lock);
+				return;
+			}
+        } 
+		else {
             //a passenger boarded, signal next if queue has more
             pthread_mutex_lock(&ride_queue_mutex);
             if (ride_queue_size > 0 && c->boarded < p) {
@@ -361,7 +373,8 @@ void load(car *c) {
                 next->board_signal = 1;
                 pthread_cond_signal(&next->can_board);
                 pthread_mutex_unlock(&next->lock);
-            } else {
+            } 
+			else {
                 pthread_mutex_unlock(&ride_queue_mutex);
             }
         }
@@ -402,6 +415,7 @@ void unload(car* c) {
 	while (c->unboarded < c->passenger_count) {
 		pthread_cond_wait(&c->unboard_done, &c->lock);
 	}
+	pthread_mutex_unlock(&c->lock);
 
 	//release loading zone
 	pthread_mutex_lock(&loading_zone_mutex);
@@ -419,7 +433,9 @@ void* passenger_thread(void* arg) {
 		if(!get_ride_ticket(p)) {
 			continue;
 		}
-		enter_ride_queue(p);
+		if (!enter_ride_queue(p)) {
+			continue;
+		}
 		board_car(p);
 		unboard_car(p);
 	}	
