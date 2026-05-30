@@ -102,6 +102,13 @@ void destroy_globals() {
     pthread_cond_destroy(&my_turn_to_unload);
 }
 
+int is_park_open() {
+	pthread_mutex_lock(&park_mutex);
+	int open = park_open;
+	pthread_mutex_unlock(&park_mutex);
+	return open;
+}
+
 //initialize and clean up passengers and cars
 void init_car(car *c, int id) {
     c->id = id;
@@ -172,7 +179,7 @@ void close_park() {
 		pthread_mutex_lock(&cars[i].lock);
 		pthread_cond_broadcast(&cars[i].board_done);
 		pthread_cond_broadcast(&cars[i].unboard_done);
-		pthread_mutex_lock(&cars[i].lock);
+		pthread_mutex_unlock(&cars[i].lock);
 	}
 }
 
@@ -185,12 +192,6 @@ int get_time() {
 	return (int)(time(NULL) - start);
 }
 
-int is_park_open() {
-	pthread_mutex_lock(&park_mutex);
-	int open = park_open;
-	pthread_mutex_unlock(&park_mutex);
-	return open;
-}
 
 void enqueue(int passenger_id) {
 	ride_queue[ride_queue_tail] = passenger_id;
@@ -252,10 +253,10 @@ int enter_ride_queue(passenger* p) {
 	pthread_mutex_unlock(&ride_queue_mutex);
 
 	pthread_mutex_lock(&p->lock);
-	while (!p->board_signal && park_open) {
+	while (!p->board_signal && is_park_open()) {
 		pthread_cond_wait(&p->can_board, &p->lock);
 	}
-	if (!is_park_open()) {
+	if (!p->board_signal) {
 		pthread_mutex_unlock(&p->lock);
 		return 0;
 	}
@@ -278,9 +279,14 @@ void board_car(passenger *p) {
 void unboard_car(passenger *p) {
     pthread_mutex_lock(&p->lock);
 
-    while (!p->unboard_signal) {
+    while (!p->unboard_signal && is_park_open()) {
         pthread_cond_wait(&p->can_unboard, &p->lock);
     }
+
+	if (!p->unboard_signal) {
+		pthread_mutex_unlock(&p->lock);
+		return;
+	}
 
 	//reset for next ride
     p->unboard_signal = 0;
@@ -295,7 +301,6 @@ void unboard_car(passenger *p) {
 
     //decrement ride queue and signal ticket booth
     pthread_mutex_lock(&ride_queue_mutex);
-    ride_queue_size--;
     pthread_cond_signal(&ride_queue_not_full);
     pthread_mutex_unlock(&ride_queue_mutex);
 
@@ -343,7 +348,7 @@ void load(car *c) {
 
     //wait for boarding, keep loading until full or timeout
     pthread_mutex_lock(&c->lock);
-    while (c->boarded < p) {
+    while (c->boarded < p && is_park_open()) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_sec += w;
