@@ -100,6 +100,7 @@ void destroy_globals() {
     pthread_cond_destroy(&loading_zone_free);
     pthread_mutex_destroy(&unload_order_mutex);
     pthread_cond_destroy(&my_turn_to_unload);
+	free(ride_queue);
 }
 
 int is_park_open() {
@@ -126,7 +127,7 @@ void init_passenger(passenger *p, int id) {
 	p->id = id;
     p->board_signal = 0;
     p->unboard_signal = 0;
-	p->seed = id * 12345;
+	p->seed = (unsigned int)(time(NULL) ^ (id * 12345));
 	p->my_car = NULL;
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->can_board, NULL);
@@ -223,11 +224,11 @@ void explore_park(passenger* p) {
 		}
 	}
 	pthread_mutex_unlock(&park_mutex);
-	printf("[Time: %d] Passenger %d explored for %d seconds\n", get_time(), p->id, explore_time);
 }
 
 int get_ride_ticket(passenger* p) {
 	pthread_mutex_lock(&ticket_booth_mutex);
+	printf("[Time: %d] Passenger %d entered the ticket queue\n", get_time(), p->id);
 
 	//if ride is full, wait
 	while (ride_queue_size >= j && is_park_open()) {
@@ -270,7 +271,6 @@ int enter_ride_queue(passenger* p) {
 void board_car(passenger *p) {
     pthread_mutex_lock(&p->my_car->lock);
     p->my_car->boarded++;
-    //printf("[Time: ] Passenger %d boarded, total boarded: %d\n", p->id, p->my_car->boarded);
 
     pthread_cond_signal(&p->my_car->board_done);
     pthread_mutex_unlock(&p->my_car->lock);
@@ -310,6 +310,7 @@ void unboard_car(passenger *p) {
 
 //car functions
 void load(car *c) {
+	printf("[Time: %d] Car %d invoked load()\n", get_time(), c->id);
     //get loading zone
     pthread_mutex_lock(&loading_zone_mutex);
     while (loading_zone_occupied) {
@@ -330,6 +331,10 @@ void load(car *c) {
         pthread_cond_wait(&passenger_ready, &ride_queue_mutex);
 		if (!is_park_open()) {
 			pthread_mutex_unlock(&ride_queue_mutex);
+			pthread_mutex_lock(&loading_zone_mutex);
+			loading_zone_occupied = 0;
+			pthread_cond_signal(&loading_zone_free);
+			pthread_mutex_unlock(&loading_zone_mutex);
 			return;
 		}
     }
@@ -385,6 +390,15 @@ void load(car *c) {
         }
     }
 
+	if (!is_park_open() && c->passenger_count == 0) {
+		pthread_mutex_unlock(&c->lock);
+		pthread_mutex_lock(&loading_zone_mutex);
+		loading_zone_occupied = 0;
+		pthread_cond_signal(&loading_zone_free);
+		pthread_mutex_unlock(&loading_zone_mutex);
+		return;
+	}
+
     c->passenger_count = c->boarded;
 	if (c->passenger_count == p) {
 		printf("[Time: %d] Car %d is full with %d passengers\n", get_time(), c->id, c->passenger_count);
@@ -417,7 +431,7 @@ void unload(car* c) {
 	}
 
 	//wait until unboarding complete
-	while (c->unboarded < c->passenger_count) {
+	while (c->unboarded < c->passenger_count && is_park_open()) {
 		pthread_cond_wait(&c->unboard_done, &c->lock);
 	}
 	pthread_mutex_unlock(&c->lock);
@@ -432,9 +446,14 @@ void unload(car* c) {
 //thread functions
 void* passenger_thread(void* arg) {
 	passenger* p = (passenger*)arg;
+	printf("[Time: %d] Passenger %d entered the park\n", get_time(), p->id);
 
 	while (is_park_open()) {
 		explore_park(p);
+		if (!is_park_open()) {
+			continue;
+		}
+		printf("[Time: %d] Passenger %d finished exploring, entering the ticket booth\n", get_time(), p->id);
 		if(!get_ride_ticket(p)) {
 			continue;
 		}
@@ -515,7 +534,7 @@ int main(int argc, char* argv[]) {
 
 	}
 
-	printf("n: %d, c: %d, p: %d, w: %d, r: %d, t: %d, j: %d\n", n, c, p, w, r, t, j);
+	//printf("n: %d, c: %d, p: %d, w: %d, r: %d, t: %d, j: %d\n", n, c, p, w, r, t, j);
 
 	init_globals();
 
@@ -524,18 +543,18 @@ int main(int argc, char* argv[]) {
 	pthread_t* car_threads = (pthread_t*)malloc(c * sizeof(pthread_t));
 	pthread_t* passenger_threads = (pthread_t*)malloc(n * sizeof(pthread_t));
 
-	for (int i = 0; i < c; i++) {
-		init_car(&cars[i], i);
-	}
 	for (int i = 0; i < n; i++) {
 		init_passenger(&passengers[i], i);
 	}
-	
 	for (int i = 0; i < c; i++) {
-		pthread_create(&car_threads[i], NULL, car_thread, &cars[i]);
+		init_car(&cars[i], i);
 	}
+	
 	for (int i = 0; i < n; i++) {
 		pthread_create(&passenger_threads[i], NULL, passenger_thread, &passengers[i]);
+	}
+	for (int i = 0; i < c; i++) {
+		pthread_create(&car_threads[i], NULL, car_thread, &cars[i]);
 	}
 
 	//run park for t
