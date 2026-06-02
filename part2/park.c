@@ -14,6 +14,7 @@ typedef enum {
 
 typedef struct {
 	int id;
+	int sequence;
 	int passenger_count;
 	car_state state;
 	int boarded;
@@ -36,13 +37,13 @@ typedef struct {
 } passenger;
 
 //default options
-int n = 1;   //number of passenger threads
-int c = 1;   //number of car threads
-int p = 1;   //capacity per car
+int n = 10;  //number of passenger threads
+int c = 2;   //number of car threads
+int p = 2;   //capacity per car
 int w = 1;   //car waiting period
 int r = 1;   //car ride duration
-int t = 25;  //park open duration
-int j = 1;   //ride queue max size
+int t = 30;  //park open duration
+int j = 3;   //ride queue max size
 
 //passenger/car arrays
 car* cars;
@@ -113,6 +114,7 @@ int is_park_open() {
 //initialize and clean up passengers and cars
 void init_car(car *c, int id) {
     c->id = id;
+	c->sequence = 0;
     c->passenger_count = 0;
     c->state = LOADING;
     c->boarded = 0;
@@ -168,6 +170,10 @@ void close_park() {
 	pthread_mutex_lock(&loading_zone_mutex);
 	pthread_cond_broadcast(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
+
+	pthread_mutex_lock(&unload_order_mutex);
+	pthread_cond_broadcast(&my_turn_to_unload);
+	pthread_mutex_unlock(&unload_order_mutex);
 
 	for (int i = 0; i < n; i++) {
 		pthread_mutex_lock(&passengers[i].lock);
@@ -390,7 +396,7 @@ void load(car *c) {
         }
     }
 
-	if (!is_park_open() && c->passenger_count == 0) {
+	if (!is_park_open() && c->boarded == 0) {
 		pthread_mutex_unlock(&c->lock);
 		pthread_mutex_lock(&loading_zone_mutex);
 		loading_zone_occupied = 0;
@@ -403,6 +409,11 @@ void load(car *c) {
 	if (c->passenger_count == p) {
 		printf("[Time: %d] Car %d is full with %d passengers\n", get_time(), c->id, c->passenger_count);
 	}
+	
+	pthread_mutex_lock(&unload_order_mutex);
+	c->sequence = current_sequence++;
+	pthread_mutex_unlock(&unload_order_mutex);
+
     printf("[Time: %d] Car %d has departed to ride\n", get_time(), c->id);
     pthread_mutex_unlock(&c->lock);
 }
@@ -416,7 +427,23 @@ void run(car* c) {
 }
 
 void unload(car* c) {
+	printf("[Debug] Car %d entering unload, sequence=%d, next=%d\n", c->id, c->sequence, next_unload_seq);
+	//wait for turn
+	pthread_mutex_lock(&unload_order_mutex);
+	printf("[Debug] Car %d got unload_order_mutex\n", c->id);
+	while (c->sequence != next_unload_seq && is_park_open()) {
+		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
+	}
+	pthread_mutex_unlock(&unload_order_mutex);
+	printf("[Debug] Car %d passed sequence check\n", c->id);
+
+	/*if (!is_park_open()) {
+		return;
+	}*/
+	printf("[Debug] Car %d trying to lock c->lock\n", c->id);
+
 	pthread_mutex_lock(&c->lock);
+	printf("[Debug] Car %d got c->lock\n", c->id);
 	c->state = UNLOADING;
 	c->unboarded = 0;
 	printf("[Time: %d] Car %d has invoked unload()\n", get_time(), c->id);
@@ -435,6 +462,11 @@ void unload(car* c) {
 		pthread_cond_wait(&c->unboard_done, &c->lock);
 	}
 	pthread_mutex_unlock(&c->lock);
+
+	pthread_mutex_lock(&unload_order_mutex);
+	next_unload_seq++;
+	pthread_cond_broadcast(&my_turn_to_unload);
+	pthread_mutex_unlock(&unload_order_mutex);
 
 	//release loading zone
 	pthread_mutex_lock(&loading_zone_mutex);
@@ -471,13 +503,16 @@ void* car_thread(void* arg) {
 
 	while(is_park_open()) {
 		load(c);
-		if (!is_park_open()) {
+		/*if (!is_park_open()) {
+			break;
+		}*/
+		if (c->passenger_count == 0) {
 			break;
 		}
 		run(c);
-		if (!is_park_open()) {
+		/*if (!is_park_open()) {
 			break;
-		}
+		}*/
 		unload(c);
 	}
 
