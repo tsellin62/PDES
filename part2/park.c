@@ -292,12 +292,14 @@ void board_car(passenger *p) {
 }
 
 void unboard_car(passenger *p) {
+	printf("[DEBUG] passenger %d unboard path, car=%d\n", p->id, p->my_car->id);
     pthread_mutex_lock(&p->lock);
 
     while (!p->unboard_signal && is_park_open()) {
         pthread_cond_wait(&p->can_unboard, &p->lock);
     }
 
+	/*
 	if (!p->unboard_signal) {
 		pthread_mutex_unlock(&p->lock);
 		pthread_mutex_lock(&p->my_car->lock);
@@ -307,6 +309,7 @@ void unboard_car(passenger *p) {
 		p->my_car = NULL;
 		return;
 	}
+	*/
 
 	//reset for next ride
     p->unboard_signal = 0;
@@ -436,12 +439,12 @@ void load(car *c) {
     printf("[Time: %d] Car %d has departed to ride\n", get_time(), c->id);
     pthread_mutex_unlock(&c->lock);
 
-	/*
+	//release loading zone	
 	pthread_mutex_lock(&loading_zone_mutex);
 	loading_zone_occupied = 0;
 	pthread_cond_signal(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
-	*/
+	
 }
 
 void run(car* c) {
@@ -457,16 +460,15 @@ void unload(car* c) {
 	//wait for turn
 	pthread_mutex_lock(&unload_order_mutex);
 	printf("[Debug] Car %d got unload_order_mutex\n", c->id);
-	while (c->sequence != next_unload_seq && is_park_open()) {
+	while (c->sequence != next_unload_seq) {
 		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
 	}
-	if (c->sequence != next_unload_seq && is_park_open()) {
-		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
-	}
+	/*
 	if (!is_park_open()) {
 		pthread_mutex_unlock(&unload_order_mutex);
 		return;
 	}
+	*/
 
 	pthread_mutex_unlock(&unload_order_mutex);
 	printf("[Debug] Car %d passed sequence check\n", c->id);
@@ -508,10 +510,12 @@ void unload(car* c) {
 	pthread_mutex_unlock(&unload_order_mutex);
 
 	//release loading zone
+	/*
 	pthread_mutex_lock(&loading_zone_mutex);
 	loading_zone_occupied = 0;
 	pthread_cond_signal(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
+	*/
 }
 
 //thread functions
@@ -531,8 +535,8 @@ void* passenger_thread(void* arg) {
 		if (!enter_ride_queue(p)) {
 			continue;
 		}
-		board_car(p);
-		unboard_car(p);
+		//board_car(p);
+		//unboard_car(p);
 	}	
 
 	printf("[Debug] Passenger %d exiting thread\n", p->id);
