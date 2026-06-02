@@ -233,22 +233,23 @@ void explore_park(passenger* p) {
 }
 
 int get_ride_ticket(passenger* p) {
-	pthread_mutex_lock(&ticket_booth_mutex);
+	//pthread_mutex_lock(&ticket_booth_mutex);
 	printf("[Time: %d] Passenger %d entered the ticket queue\n", get_time(), p->id);
 
 	//if ride is full, wait
+	pthread_mutex_lock(&ride_queue_mutex);
 	while (ride_queue_size >= j && is_park_open()) {
-		pthread_cond_wait(&ride_queue_not_full, &ticket_booth_mutex);
+		pthread_cond_wait(&ride_queue_not_full, &ride_queue_mutex);
 	}
 
 	//if park closes while waiting, exit
 	if (!is_park_open()) {
-		pthread_mutex_unlock(&ticket_booth_mutex);
+		pthread_mutex_unlock(&ride_queue_mutex);
 		return 0;
 	}
 	
 	printf("[Time: %d] Passenger %d acquired a ticket\n", get_time(), p->id);
-	pthread_mutex_unlock(&ticket_booth_mutex);
+	pthread_mutex_unlock(&ride_queue_mutex);
 	return 1;
 }
 
@@ -319,9 +320,14 @@ void load(car *c) {
 	printf("[Time: %d] Car %d invoked load()\n", get_time(), c->id);
     //get loading zone
     pthread_mutex_lock(&loading_zone_mutex);
-    while (loading_zone_occupied) {
+    while (loading_zone_occupied && is_park_open()) {
         pthread_cond_wait(&loading_zone_free, &loading_zone_mutex);
     }
+	if (!is_park_open()) {
+		pthread_mutex_unlock(&loading_zone_mutex);
+		return;
+	}
+	printf("Car %d acquired loading zone\n", c->id);
     loading_zone_occupied = 1;
     pthread_mutex_unlock(&loading_zone_mutex);
 
@@ -431,7 +437,7 @@ void unload(car* c) {
 	//wait for turn
 	pthread_mutex_lock(&unload_order_mutex);
 	printf("[Debug] Car %d got unload_order_mutex\n", c->id);
-	while (c->sequence != next_unload_seq && is_park_open()) {
+	while (c->sequence != next_unload_seq) {
 		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
 	}
 	pthread_mutex_unlock(&unload_order_mutex);
@@ -495,6 +501,7 @@ void* passenger_thread(void* arg) {
 		board_car(p);
 		unboard_car(p);
 	}	
+	printf("[Debug] Passenger %d exiting thread\n", p->id);
 	return NULL;
 }
 
@@ -516,6 +523,7 @@ void* car_thread(void* arg) {
 		unload(c);
 	}
 
+	printf("[Debug] Car %d exiting thread\n", c->id);
 	return NULL;
 }
 
@@ -600,10 +608,14 @@ int main(int argc, char* argv[]) {
 
 	//wait for threads to finish
 	for (int i = 0; i < c; i++) {
+		printf("[DEBUG] Joining car %d\n", i);
 		pthread_join(car_threads[i], NULL);
+		printf("[DEBUG] Joined car %d\n", i);
 	}
 	for (int i = 0; i < n; i++) {
+		printf("[DEBUG] Joining passenger %d\n", i);
 		pthread_join(passenger_threads[i], NULL);
+		printf("[DEBUG] Joined passenger %d\n", i);
 	}
 
 	for (int i = 0; i < c; i++) {
