@@ -436,10 +436,12 @@ void load(car *c) {
     printf("[Time: %d] Car %d has departed to ride\n", get_time(), c->id);
     pthread_mutex_unlock(&c->lock);
 
+	/*
 	pthread_mutex_lock(&loading_zone_mutex);
 	loading_zone_occupied = 0;
 	pthread_cond_signal(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
+	*/
 }
 
 void run(car* c) {
@@ -489,7 +491,7 @@ void unload(car* c) {
 	}
 
 	//wait until unboarding complete
-	while (c->unboarded < c->passenger_count) {
+	while (c->unboarded < c->passenger_count && is_park_open()) {
 		pthread_cond_wait(&c->unboard_done, &c->lock);
 	}
 	pthread_mutex_unlock(&c->lock);
@@ -526,11 +528,6 @@ void* passenger_thread(void* arg) {
 		board_car(p);
 		unboard_car(p);
 	}	
-
-	if (p->my_car != NULL) {
-		board_car(p);
-		unboard_car(p);
-	}
 
 	printf("[Debug] Passenger %d exiting thread\n", p->id);
 	return NULL;
