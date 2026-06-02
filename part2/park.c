@@ -460,9 +460,10 @@ void unload(car* c) {
 	while (c->sequence != next_unload_seq && is_park_open()) {
 		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
 	}
-	if (c->sequence != next_unload_seq) {
-		next_unload_seq++;
-		pthread_cond_broadcast(&my_turn_to_unload);
+	if (c->sequence != next_unload_seq && is_park_open()) {
+		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
+	}
+	if (!is_park_open()) {
 		pthread_mutex_unlock(&unload_order_mutex);
 		return;
 	}
@@ -491,12 +492,17 @@ void unload(car* c) {
 	}
 
 	//wait until unboarding complete
-	while (c->unboarded < c->passenger_count && is_park_open()) {
+	while (c->unboarded < c->passenger_count) {
 		pthread_cond_wait(&c->unboard_done, &c->lock);
 	}
 	pthread_mutex_unlock(&c->lock);
 
 	pthread_mutex_lock(&unload_order_mutex);
+	printf(
+    "[Debug] Car %d waiting for %d/%d unboarded\n",
+    c->id,
+    c->unboarded,
+    c->passenger_count);
 	next_unload_seq++;
 	pthread_cond_broadcast(&my_turn_to_unload);
 	pthread_mutex_unlock(&unload_order_mutex);
