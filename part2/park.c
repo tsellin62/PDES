@@ -340,7 +340,7 @@ void load(car *c) {
 		pthread_mutex_unlock(&loading_zone_mutex);
 		return;
 	}
-	printf("Car %d acquired loading zone\n", c->id);
+	//printf("Car %d acquired loading zone\n", c->id);
     loading_zone_occupied = 1;
     pthread_mutex_unlock(&loading_zone_mutex);
 
@@ -376,17 +376,19 @@ void load(car *c) {
     pthread_cond_signal(&first->can_board);
     pthread_mutex_unlock(&first->lock);
 
+	//get necessary time for wait
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	ts.tv_sec += w;
+	
     //wait for boarding, keep loading until full or timeout
     pthread_mutex_lock(&c->lock);
     while (c->boarded < p && is_park_open()) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_sec += w;
-
         int result = pthread_cond_timedwait(&c->board_done, &c->lock, &ts);
 
         if (result == ETIMEDOUT) {
             if (c->boarded > 0) {
+				printf("[Time: %d] Car %d waiting period expired\n", get_time(), c->id);
                 break;
             }
 			else if (!is_park_open()) {
@@ -453,10 +455,10 @@ void run(car* c) {
 }
 
 void unload(car* c) {
-	printf("[Debug] Car %d entering unload, sequence=%d, next=%d\n", c->id, c->sequence, next_unload_seq);
+	//printf("[Debug] Car %d entering unload, sequence=%d, next=%d\n", c->id, c->sequence, next_unload_seq);
 	//wait for turn
 	pthread_mutex_lock(&unload_order_mutex);
-	printf("[Debug] Car %d got unload_order_mutex\n", c->id);
+	//printf("[Debug] Car %d got unload_order_mutex\n", c->id);
 	while (c->sequence != next_unload_seq && is_park_open()) {
 		pthread_cond_wait(&my_turn_to_unload, &unload_order_mutex);
 	}
@@ -469,15 +471,11 @@ void unload(car* c) {
 	}
 
 	pthread_mutex_unlock(&unload_order_mutex);
-	printf("[Debug] Car %d passed sequence check\n", c->id);
-
-	/*if (!is_park_open()) {
-		return;
-	}*/
-	printf("[Debug] Car %d trying to lock c->lock\n", c->id);
+	//printf("[Debug] Car %d passed sequence check\n", c->id);
+	//printf("[Debug] Car %d trying to lock c->lock\n", c->id);
 
 	pthread_mutex_lock(&c->lock);
-	printf("[Debug] Car %d got c->lock\n", c->id);
+	//printf("[Debug] Car %d got c->lock\n", c->id);
 	c->state = UNLOADING;
 	c->unboarded = 0;
 	printf("[Time: %d] Car %d has invoked unload()\n", get_time(), c->id);
@@ -498,11 +496,8 @@ void unload(car* c) {
 	pthread_mutex_unlock(&c->lock);
 
 	pthread_mutex_lock(&unload_order_mutex);
-	printf(
-    "[Debug] Car %d waiting for %d/%d unboarded\n",
-    c->id,
-    c->unboarded,
-    c->passenger_count);
+	/*printf("[Debug] Car %d waiting for %d/%d unboarded\n",
+    c->id, c->unboarded, c->passenger_count);*/
 	next_unload_seq++;
 	pthread_cond_broadcast(&my_turn_to_unload);
 	pthread_mutex_unlock(&unload_order_mutex);
@@ -535,7 +530,7 @@ void* passenger_thread(void* arg) {
 		unboard_car(p);
 	}	
 
-	printf("[Debug] Passenger %d exiting thread\n", p->id);
+	//printf("[Debug] Passenger %d exiting thread\n", p->id);
 	return NULL;
 }
 
@@ -544,20 +539,14 @@ void* car_thread(void* arg) {
 
 	while(is_park_open()) {
 		load(c);
-		/*if (!is_park_open()) {
-			break;
-		}*/
 		if (c->passenger_count == 0) {
 			break;
 		}
 		run(c);
-		/*if (!is_park_open()) {
-			break;
-		}*/
 		unload(c);
 	}
 
-	printf("[Debug] Car %d exiting thread\n", c->id);
+	//printf("[Debug] Car %d exiting thread\n", c->id);
 	return NULL;
 }
 
