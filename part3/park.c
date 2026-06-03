@@ -458,13 +458,12 @@ void load(car *c) {
 
     printf("[Time: %d] Car %d has departed to ride\n", get_time(), c->id);
     pthread_mutex_unlock(&c->lock);
-
-	/*
+	
 	pthread_mutex_lock(&loading_zone_mutex);
 	loading_zone_occupied = 0;
 	pthread_cond_signal(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
-	*/
+	
 }
 
 void run(car* c) {
@@ -524,11 +523,13 @@ void unload(car* c) {
 	pthread_cond_broadcast(&my_turn_to_unload);
 	pthread_mutex_unlock(&unload_order_mutex);
 
+	/*
 	//release loading zone
 	pthread_mutex_lock(&loading_zone_mutex);
 	loading_zone_occupied = 0;
 	pthread_cond_signal(&loading_zone_free);
 	pthread_mutex_unlock(&loading_zone_mutex);
+	*/
 }
 
 //thread functions
