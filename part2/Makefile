@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra
+CFLAGS = -Wall -Wextra -g -pthread -lpthread
 
 park: park.o
 	$(CC) $(CFLAGS) -o park park.o

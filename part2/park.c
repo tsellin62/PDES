@@ -237,23 +237,23 @@ void explore_park(passenger* p) {
 }
 
 int get_ride_ticket(passenger* p) {
-	//pthread_mutex_lock(&ticket_booth_mutex);
+	pthread_mutex_lock(&ticket_booth_mutex);
 	printf("[Time: %d] Passenger %d entered the ticket queue\n", get_time(), p->id);
 
 	//if ride is full, wait
-	pthread_mutex_lock(&ride_queue_mutex);
+	//pthread_mutex_lock(&ride_queue_mutex);
 	while (ride_queue_size >= j && is_park_open()) {
-		pthread_cond_wait(&ride_queue_not_full, &ride_queue_mutex);
+		pthread_cond_wait(&ride_queue_not_full, &ticket_booth_mutex);
 	}
 
 	//if park closes while waiting, exit
 	if (!is_park_open()) {
-		pthread_mutex_unlock(&ride_queue_mutex);
+		pthread_mutex_unlock(&ticket_booth_mutex);
 		return 0;
 	}
 	
 	printf("[Time: %d] Passenger %d acquired a ticket\n", get_time(), p->id);
-	pthread_mutex_unlock(&ride_queue_mutex);
+	pthread_mutex_unlock(&ticket_booth_mutex);
 	return 1;
 }
 
@@ -320,9 +320,9 @@ void unboard_car(passenger *p) {
     pthread_mutex_unlock(&p->my_car->lock);
 
     //decrement ride queue and signal ticket booth
-    pthread_mutex_lock(&ride_queue_mutex);
+    pthread_mutex_lock(&ticket_booth_mutex);
     pthread_cond_signal(&ride_queue_not_full);
-    pthread_mutex_unlock(&ride_queue_mutex);
+    pthread_mutex_unlock(&ticket_booth_mutex);
 
 	//detach from car
     p->my_car = NULL;
