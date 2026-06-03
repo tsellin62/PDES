@@ -634,7 +634,7 @@ void run_monitor_child(pthread_t* car_threads, pthread_t* passenger_threads) {
 
     snapshot s;
     while (read(monitor_pipe[0], &s, sizeof(snapshot)) == sizeof(snapshot)) {
-        printf("\n========== [Monitor @ Time %d] ==========\n", s.time);
+        /*printf("\n========== [Monitor @ Time %d] ==========\n", s.time);
 
         printf("Ticket queue:  %d waiting\n", s.ticket_queue_size);
 
@@ -662,6 +662,34 @@ void run_monitor_child(pthread_t* car_threads, pthread_t* passenger_threads) {
             printf("]\n");
         }
         printf("==========================================\n\n");
+		*/
+		char buf[2048];
+		int pos = 0;
+
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "\n========== [Monitor @ Time %d] ==========\n", s.time);
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "Ticket queue:  %d waiting\n", s.ticket_queue_size);
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "Ride queue:    %d waiting [ ", s.ride_queue_size);
+		for (int i = 0; i < s.ride_queue_size; i++)
+			pos += snprintf(buf + pos, sizeof(buf) - pos, "P%d ", s.ride_queue_ids[i]);
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
+
+		for (int i = 0; i < s.num_cars; i++) {
+			const char* state_str =
+				s.car_snapshots[i].state == LOADING   ? "LOADING"   :
+				s.car_snapshots[i].state == RUNNING   ? "RUNNING"   :
+				s.car_snapshots[i].state == UNLOADING ? "UNLOADING" : "UNKNOWN";
+			pos += snprintf(buf + pos, sizeof(buf) - pos, "Car %d: [%s] %d/%d passengers [ ",
+				s.car_snapshots[i].id, state_str,
+				s.car_snapshots[i].passenger_count,
+				s.car_snapshots[i].capacity);
+			for (int k = 0; k < s.car_snapshots[i].passenger_count; k++)
+				pos += snprintf(buf + pos, sizeof(buf) - pos, "P%d ", s.car_snapshots[i].aboard[k]);
+			pos += snprintf(buf + pos, sizeof(buf) - pos, "]\n");
+		}
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "==========================================\n\n");
+
+		printf("%s", buf);
+		fflush(stdout);
     }
 
     close(monitor_pipe[0]);
